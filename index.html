@@ -363,10 +363,12 @@ function buildRing(){                            // low-detail mountains out to 
     const c=document.createElement('canvas'); c.width=img.width; c.height=img.height;
     const g=c.getContext('2d'); g.drawImage(img,0,0); const d=g.getImageData(0,0,c.width,c.height).data;
     const nx=c.width, nz=c.height, geo=new THREE.PlaneGeometry(R.x1-R.x0,R.z1-R.z0,nx-1,nz-1), pos=geo.attributes.position;
+    ringH={a:new Float32Array(nx*nz),nx,nz};
     for(let j=0;j<nz;j++) for(let i=0;i<nx;i++){
       const k=(j*nx+i)*4, h=((d[k]<<8)|d[k+1])/65535*HMAX, x=R.x0+i*R.s, z=R.z0+j*R.s;
       const inside=Math.abs(x)<KMX/2-1e-6 && Math.abs(z)<KMZ/2-1e-6;
       pos.setZ(j*nx+i, inside ? h-0.06 : h-0.003);      // tucked just under the detailed terrain
+      ringH.a[j*nx+i]=h;
     }
     const mat=new THREE.MeshBasicMaterial({color:0xffffff});
     ring=new THREE.Mesh(geo,mat);
@@ -380,6 +382,19 @@ function buildRing(){                            // low-detail mountains out to 
   img.src=TEX.OH;
 }
 function applyVE(){ if(mesh) mesh.scale.z=VE; if(ring) ring.scale.z=VE; overlay.scale.y=VE; labels.scale.y=VE; gSel.scale.y=VE; }
+let ringH=null, camLift=0;
+function groundH(x,z){                           // ground height anywhere: the detailed terrain, else the outer ring
+  if(Math.abs(x)<KMX/2 && Math.abs(z)<KMZ/2) return sampleH(x,z);
+  if(!ringH) return 0;
+  const R=FIELD.ring, u=(x-R.x0)/R.s, v=(z-R.z0)/R.s;
+  const i=Math.max(0,Math.min(ringH.nx-2,Math.floor(u))), j=Math.max(0,Math.min(ringH.nz-2,Math.floor(v))), fu=Math.min(1,Math.max(0,u-i)), fv=Math.min(1,Math.max(0,v-j)), A=ringH.a, W=ringH.nx;
+  return (A[j*W+i]*(1-fu)+A[j*W+i+1]*fu)*(1-fv) + (A[(j+1)*W+i]*(1-fu)+A[(j+1)*W+i+1]*fu)*fv;
+}
+function blocked(ax,ay,az,bx,by,bz,n,pad){      // does the ground cut the sight line a->b (world units, y already stretched by VE)?
+  for(let k=1;k<n;k++){ const t=k/n, x=ax+(bx-ax)*t, z=az+(bz-az)*t, y=ay+(by-ay)*t;
+    if(groundH(x,z)*VE>y+pad) return true; }
+  return false;
+}
 function sampleH(x,z){
   if(!stats.hgt) return 0;
   const u=(x/KMX+0.5)*(stats.SW-1), v=(z/KMZ+0.5)*(stats.SH-1);
@@ -1291,7 +1306,8 @@ function tick(){
     const cxp=orb.tx+Math.cos(orb.a)*Math.cos(orb.p)*orb.d;
     const czp=orb.tz+Math.sin(orb.a)*Math.cos(orb.p)*orb.d;
     let cyp=cy+Math.sin(orb.p)*orb.d+0.25*Math.min(1,orb.d/2);
-    cyp=Math.max(cyp, sampleH(cxp,czp)*VE+0.020);   // never dip below the snow
+    cyp=Math.max(cyp, groundH(cxp,czp)*VE+0.020);   // never dip below the snow, the outer mountains included
+    for(let k=0;k<40 && blocked(cxp,cyp,czp,orb.tx,cy+0.25,orb.tz,32,0); k++) cyp+=0.05;   // a ridge in the way: rise until the view is clear
     const lookY=cy+0.25;
     if(fly){                                      // eased flight from where the camera was to the orbit view
       const k=Math.min(1,(clock.elapsedTime-fly.t0)/2.6), e=k<.5?4*k*k*k:1-Math.pow(-2*k+2,3)/2;
@@ -1319,6 +1335,8 @@ function tick(){
                : Math.min(0.062, Math.max(0.013, d*0.0112)))*(s.userData.kmul||1);
     s.scale.set(k*s.userData.aspect, k/VE, 1);    // undo that stretch so signs keep their shape
     if(s.userData.grade!=null && GRADE_OFF[s.userData.grade]){ s.visible=false; continue; }
+    const hid=blocked(cp.x,cp.y,cp.z,wp.x,wp.y,wp.z,24,0.004);   // behind the mountain from here: don't draw it through the terrain
+    if(hid){ s.visible=false; continue; }
     if(s.userData.sym){ s.visible=d<6.5; s.material.opacity=d>5.5?Math.max(0,(6.5-d)):1; continue; }   // map symbols always show
     if(d >= (mk?7.5:5.0)){ s.visible=false; continue; }     // run names fade in as you come closer
     const p=wp.clone().project(camera);
